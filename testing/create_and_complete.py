@@ -90,7 +90,7 @@ class TaskFiTester:
             signed_txn = self.w3.eth.account.sign_transaction(transaction, self.account.key)
             
             # Send transaction
-            tx_hash = self.w3.eth.send_raw_transaction(signed_txn.rawTransaction)
+            tx_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
             
             print(f"📝 Transaction sent: {tx_hash.hex()}")
             
