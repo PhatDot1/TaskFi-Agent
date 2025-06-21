@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-Simplified TaskFi Monitoring Agent
-Compatible version with better error handling and simpler dependencies
+Fixed TaskFi Monitoring Agent
+- Loads environment variables properly
+- Uses correct contract ABI structure
+- Fixed web3 imports for compatibility
+- Proper tuple handling for contract calls
 """
 
 import os
@@ -13,8 +16,10 @@ import logging
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
-from dotenv import load_dotenv
+from pathlib import Path
 
+# Load environment variables first
+from dotenv import load_dotenv
 load_dotenv()
 
 # Core dependencies
@@ -32,7 +37,7 @@ try:
     import numpy as np
     EMBEDDINGS_AVAILABLE = True
 except ImportError:
-    print("Warning: Sentence transformers not available. Install sentence-transformers.")
+    print("Warning: Sentence transformers not available.")
     EMBEDDINGS_AVAILABLE = False
 
 try:
@@ -48,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TaskData:
-    """Task data structure"""
+    """Task data structure matching contract output"""
     task_id: int
     user: str
     description: str
@@ -60,8 +65,8 @@ class TaskData:
     nft_token_id: int
     created_at: int
 
-class SimpleTaskFiAgent:
-    """Simplified TaskFi monitoring agent"""
+class FixedTaskFiAgent:
+    """Fixed TaskFi monitoring agent"""
     
     def __init__(self):
         self.setup_models()
@@ -132,6 +137,10 @@ class SimpleTaskFiAgent:
             self.private_key = os.getenv("PRIVATE_KEY")
             if self.private_key:
                 try:
+                    # Remove 0x prefix if present
+                    if self.private_key.startswith('0x'):
+                        self.private_key = self.private_key[2:]
+                    
                     self.account = self.w3.eth.account.from_key(self.private_key)
                     logger.info(f"Account configured: {self.account.address}")
                 except Exception as e:
@@ -155,30 +164,56 @@ class SimpleTaskFiAgent:
         logger.info("Integrations configured")
         
     def load_contract_abi(self) -> List[Dict]:
-        """Load simplified contract ABI"""
+        """Load actual contract ABI from file"""
+        try:
+            # Try to load from abi/TaskFi.json
+            abi_path = Path("abi/TaskFi.json")
+            if abi_path.exists():
+                with open(abi_path, 'r') as f:
+                    abi_data = json.load(f)
+                    if 'abi' in abi_data:
+                        logger.info("Loaded ABI from abi/TaskFi.json")
+                        return abi_data['abi']
+                    else:
+                        logger.info("Using ABI array from abi/TaskFi.json")
+                        return abi_data
+            else:
+                logger.warning("ABI file not found, using simplified ABI")
+                return self.get_simplified_abi()
+        except Exception as e:
+            logger.error(f"Failed to load ABI: {e}")
+            return self.get_simplified_abi()
+            
+    def get_simplified_abi(self) -> List[Dict]:
+        """Simplified ABI for basic functionality"""
         return [
             {
-                "inputs": [{"name": "taskId", "type": "uint256"}],
-                "name": "getTask",
-                "outputs": [
-                    {"name": "taskId", "type": "uint256"},
-                    {"name": "user", "type": "address"}, 
-                    {"name": "description", "type": "string"},
-                    {"name": "deposit", "type": "uint256"},
-                    {"name": "deadline", "type": "uint256"},
-                    {"name": "status", "type": "uint8"},
-                    {"name": "proofOfCompletion", "type": "string"},
-                    {"name": "completionNFTUri", "type": "string"},
-                    {"name": "nftTokenId", "type": "uint256"},
-                    {"name": "createdAt", "type": "uint256"}
-                ],
+                "inputs": [],
+                "name": "getCurrentTaskId",
+                "outputs": [{"name": "", "type": "uint256"}],
                 "stateMutability": "view",
                 "type": "function"
             },
             {
-                "inputs": [],
-                "name": "getCurrentTaskId", 
-                "outputs": [{"name": "", "type": "uint256"}],
+                "inputs": [{"name": "taskId", "type": "uint256"}],
+                "name": "getTask",
+                "outputs": [{
+                    "components": [
+                        {"name": "taskId", "type": "uint256"},
+                        {"name": "user", "type": "address"},
+                        {"name": "description", "type": "string"},
+                        {"name": "deposit", "type": "uint256"},
+                        {"name": "deadline", "type": "uint256"},
+                        {"name": "status", "type": "uint8"},
+                        {"name": "proofOfCompletion", "type": "string"},
+                        {"name": "completionNFTUri", "type": "string"},
+                        {"name": "nftTokenId", "type": "uint256"},
+                        {"name": "createdAt", "type": "uint256"}
+                    ],
+                    "internalType": "struct TaskFi.Task",
+                    "name": "",
+                    "type": "tuple"
+                }],
                 "stateMutability": "view",
                 "type": "function"
             },
@@ -189,7 +224,7 @@ class SimpleTaskFiAgent:
                 ],
                 "name": "approveTaskCompletion",
                 "outputs": [],
-                "stateMutability": "nonpayable", 
+                "stateMutability": "nonpayable",
                 "type": "function"
             },
             {
@@ -210,28 +245,34 @@ class SimpleTaskFiAgent:
         try:
             logger.info("Fetching tasks from contract...")
             total_tasks = self.contract.functions.getCurrentTaskId().call()
+            logger.info(f"Total tasks in contract: {total_tasks}")
             tasks = []
             
             for task_id in range(total_tasks):
                 try:
-                    task_data = self.contract.functions.getTask(task_id).call()
+                    # Call getTask which returns a tuple
+                    task_tuple = self.contract.functions.getTask(task_id).call()
+                    
+                    # Parse the tuple into TaskData
                     task = TaskData(
-                        task_id=task_data[0],
-                        user=task_data[1],
-                        description=task_data[2], 
-                        deposit=task_data[3],
-                        deadline=task_data[4],
-                        status=task_data[5],
-                        proof_of_completion=task_data[6],
-                        completion_nft_uri=task_data[7],
-                        nft_token_id=task_data[8],
-                        created_at=task_data[9]
+                        task_id=task_tuple[0],
+                        user=task_tuple[1],
+                        description=task_tuple[2],
+                        deposit=task_tuple[3],
+                        deadline=task_tuple[4],
+                        status=task_tuple[5],
+                        proof_of_completion=task_tuple[6],
+                        completion_nft_uri=task_tuple[7],
+                        nft_token_id=task_tuple[8],
+                        created_at=task_tuple[9]
                     )
                     tasks.append(task)
+                    logger.info(f"✅ Task {task_id}: {task.description[:50]}... Status: {task.status}")
+                    
                 except Exception as e:
                     logger.warning(f"Failed to fetch task {task_id}: {e}")
                     
-            logger.info(f"Fetched {len(tasks)} tasks")
+            logger.info(f"Successfully fetched {len(tasks)} tasks")
             return tasks
             
         except Exception as e:
@@ -419,6 +460,7 @@ class SimpleTaskFiAgent:
         for task in proof_tasks:
             try:
                 logger.info(f"Processing task {task.task_id}: {task.description[:50]}...")
+                logger.info(f"Proof URL: {task.proof_of_completion}")
                 
                 # Analyze the proof image
                 image_description = self.analyze_image(task.proof_of_completion)
@@ -428,10 +470,10 @@ class SimpleTaskFiAgent:
                 
                 # Take action based on verification
                 if verification_result == "COMPLETE":
-                    logger.info(f"Task {task.task_id} verified as complete - approving")
+                    logger.info(f"✅ Task {task.task_id} verified as complete - approving")
                     self.approve_task_completion(task.task_id)
                 else:
-                    logger.info(f"Task {task.task_id} verification failed - marking as failed")
+                    logger.info(f"❌ Task {task.task_id} verification failed - marking as failed")
                     self.mark_task_failed(task.task_id)
                     
             except Exception as e:
@@ -452,7 +494,7 @@ class SimpleTaskFiAgent:
         
         for task in expired_tasks:
             try:
-                logger.info(f"Marking expired task {task.task_id} as failed")
+                logger.info(f"⏰ Marking expired task {task.task_id} as failed")
                 self.mark_task_failed(task.task_id)
             except Exception as e:
                 logger.error(f"Error marking task {task.task_id} as failed: {e}")
@@ -460,23 +502,31 @@ class SimpleTaskFiAgent:
     def log_to_opik(self, data: Dict):
         """Log data to Opik (simplified)"""
         try:
-            logger.info(f"Opik log: {json.dumps(data, indent=2)}")
-            # Implement actual Opik logging here
+            logger.info(f"📊 Opik log: {json.dumps(data, indent=2)}")
+            # Implement actual Opik logging here if needed
         except Exception as e:
             logger.error(f"Error logging to Opik: {e}")
             
     async def run_monitoring_cycle(self):
         """Run one monitoring cycle"""
         try:
-            logger.info("=" * 50)
-            logger.info("Starting monitoring cycle...")
+            logger.info("=" * 60)
+            logger.info("🚀 Starting monitoring cycle...")
             
             # Fetch all tasks
             tasks = self.fetch_tasks()
             
             if not tasks:
-                logger.info("No tasks found")
+                logger.info("📭 No tasks found")
                 return
+                
+            # Show task summary
+            status_counts = {}
+            for task in tasks:
+                status_name = ["InProgress", "Complete", "Failed"][task.status]
+                status_counts[status_name] = status_counts.get(status_name, 0) + 1
+                
+            logger.info(f"📊 Task Summary: {status_counts}")
                 
             # Process tasks with proofs
             self.process_tasks_with_proofs(tasks)
@@ -488,33 +538,36 @@ class SimpleTaskFiAgent:
             self.log_to_opik({
                 "timestamp": datetime.now().isoformat(),
                 "total_tasks": len(tasks),
+                "status_counts": status_counts,
                 "tasks_with_proofs": len([t for t in tasks if t.proof_of_completion and t.status == 0]),
                 "expired_tasks": len([t for t in tasks if t.status == 0 and int(time.time()) > t.deadline and not t.proof_of_completion])
             })
             
-            logger.info("Monitoring cycle completed")
+            logger.info("✅ Monitoring cycle completed")
             
         except Exception as e:
-            logger.error(f"Error in monitoring cycle: {e}")
+            logger.error(f"❌ Error in monitoring cycle: {e}")
             
     async def run_forever(self, interval: int = 20):
         """Run monitoring agent forever"""
-        logger.info(f"🤖 Starting TaskFi monitoring agent")
+        logger.info("🤖 Starting TaskFi monitoring agent")
         logger.info(f"📊 Checking every {interval} seconds")
         logger.info(f"📍 Contract: {self.contract_address if self.contract else 'Not available'}")
         logger.info(f"🎯 Features: BLIP={BLIP_AVAILABLE}, Embeddings={EMBEDDINGS_AVAILABLE}, Web3={WEB3_AVAILABLE}")
-        logger.info("=" * 50)
+        logger.info(f"🔑 Account: {self.account.address if self.account else 'Read-only mode'}")
+        logger.info("=" * 60)
         
         while True:
             try:
                 await self.run_monitoring_cycle()
+                logger.info(f"😴 Waiting {interval} seconds until next check...")
                 await asyncio.sleep(interval)
                 
             except KeyboardInterrupt:
-                logger.info("Agent stopped by user")
+                logger.info("🛑 Agent stopped by user")
                 break
             except Exception as e:
-                logger.error(f"Unexpected error: {e}")
+                logger.error(f"💥 Unexpected error: {e}")
                 await asyncio.sleep(interval)
 
 async def main():
@@ -525,11 +578,11 @@ async def main():
         missing_vars.append("PRIVATE_KEY")
         
     if missing_vars:
-        logger.warning(f"Missing environment variables: {missing_vars}")
-        logger.warning("Agent will run in read-only mode")
+        logger.warning(f"⚠️ Missing environment variables: {missing_vars}")
+        logger.warning("🔍 Agent will run in read-only mode")
         
     # Create and run agent
-    agent = SimpleTaskFiAgent()
+    agent = FixedTaskFiAgent()
     await agent.run_forever(interval=20)
 
 if __name__ == "__main__":
