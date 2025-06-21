@@ -42,7 +42,7 @@ class TaskFiTester:
             raise Exception("ABI file not found at abi/TaskFi.json")
             
         # Setup contract
-        self.contract_address = self.w3.to_checksum_address("0x559B8F2476C923A418114ABFD3704Abf88d43776")
+        self.contract_address = self.w3.to_checksum_address("0xBB28f99330B5fDffd96a1D1D5D6f94345B6e1229")
         self.contract = self.w3.eth.contract(address=self.contract_address, abi=self.abi)
         
         # Setup account

@@ -114,20 +114,20 @@ class FixedTaskFiAgent:
         logger.info("Setting up blockchain connection...")
         
         try:
-            # Ethereum Sepolia configuration
-            self.w3 = Web3(Web3.HTTPProvider("https://sepolia.infura.io/v3/f8a842101cf241c68380d2e9a14a2ab3"))
+            # Polygon Amoy configuration
+            self.w3 = Web3(Web3.HTTPProvider("https://rpc-amoy.polygon.technology/"))
             
             # Test connection
             if self.w3.is_connected():
-                logger.info("Connected to Ethereum Sepolia")
+                logger.info("Connected to Polygon Amoy")
                 latest_block = self.w3.eth.get_block('latest')
                 logger.info(f"Latest block: {latest_block['number']}")
             else:
-                logger.error("Failed to connect to Ethereum")
+                logger.error("Failed to connect to Amoy")
                 return
             
             # Contract configuration
-            self.contract_address = self.w3.to_checksum_address("0x559B8F2476C923A418114ABFD3704Abf88d43776")
+            self.contract_address = self.w3.to_checksum_address("0xBB28f99330B5fDffd96a1D1D5D6f94345B6e1229")
             self.contract_abi = self.load_contract_abi()
             self.contract = self.w3.eth.contract(
                 address=self.contract_address,

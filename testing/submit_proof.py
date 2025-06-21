@@ -51,7 +51,7 @@ async def submit_proof_only():
         return
         
     # Setup contract
-    contract_address = w3.to_checksum_address("0x559B8F2476C923A418114ABFD3704Abf88d43776")
+    contract_address = w3.to_checksum_address("0xBB28f99330B5fDffd96a1D1D5D6f94345B6e1229")
     contract = w3.eth.contract(address=contract_address, abi=abi)
     
     # Setup account

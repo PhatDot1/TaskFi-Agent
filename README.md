@@ -14,6 +14,7 @@ Log Results → Track everything in Opik
 3. LLM verification: "Does this image show task completion?"
 4. Decision: COMPLETE → approve task + mint NFT
 
+llamaindex github for validating github tasks instead of image tasks
 
 
 Quick Start:
@@ -31,6 +32,9 @@ export JENIUS_TOKEN="your_token"
 OPIK_API_KEY="your_key"
 OPIK_WORKSPACE="your_workspace_name"
 
-# 4. Run the agent
+# 4. Activate venv
+source venv/bin/activate
+
+# 5. Run the agent
 python taskfi_agent.py
 ```
