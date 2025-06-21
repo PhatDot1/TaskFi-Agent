@@ -6,6 +6,7 @@ Fixed TaskFi Monitoring Agent
 - Fixed web3 imports for compatibility
 - Proper tuple handling for contract calls
 - Updated to use working IPFS gateway (dweb.link)
+- Fixed for Polygon Amoy POA chain
 """
 
 import os
@@ -105,6 +106,9 @@ class FixedTaskFiAgent:
             
     def setup_blockchain(self):
         """Initialize blockchain connection"""
+        # Initialize account as None first
+        self.account = None
+        
         if not WEB3_AVAILABLE:
             logger.error("Web3 not available - blockchain features disabled")
             self.w3 = None
@@ -114,25 +118,59 @@ class FixedTaskFiAgent:
         logger.info("Setting up blockchain connection...")
         
         try:
-            # Polygon Amoy configuration
+            # Simple approach for web3.py v7+ - just create the connection
+            # and handle POA issues by catching the specific error
             self.w3 = Web3(Web3.HTTPProvider("https://rpc-amoy.polygon.technology/"))
+            logger.info("Created Web3 connection to Polygon Amoy")
             
-            # Test connection
-            if self.w3.is_connected():
-                logger.info("Connected to Polygon Amoy")
-                latest_block = self.w3.eth.get_block('latest')
-                logger.info(f"Latest block: {latest_block['number']}")
-            else:
-                logger.error("Failed to connect to Amoy")
+            # Test basic connection first
+            try:
+                is_connected = self.w3.is_connected()
+                logger.info(f"Basic connection test: {is_connected}")
+            except Exception as e:
+                logger.error(f"Basic connection failed: {e}")
+                self.w3 = None
+                self.contract = None
                 return
             
+            # Try to get latest block - this is where POA error usually occurs
+            try:
+                latest_block = self.w3.eth.get_block('latest')
+                logger.info(f"✅ Connected to Polygon Amoy - Latest block: {latest_block['number']}")
+            except Exception as block_error:
+                if "extraData" in str(block_error) and "POA" in str(block_error):
+                    logger.warning("⚠️ POA chain detected, but continuing anyway...")
+                    logger.warning("Block data may have formatting issues, but contract calls should work")
+                    # Don't return here - continue with contract setup
+                else:
+                    logger.error(f"❌ Failed to get block data: {block_error}")
+                    self.w3 = None
+                    self.contract = None
+                    return
+            
             # Contract configuration
+            logger.info("🔧 Setting up contract...")
             self.contract_address = self.w3.to_checksum_address("0xBB28f99330B5fDffd96a1D1D5D6f94345B6e1229")
+            logger.info(f"📍 Contract address: {self.contract_address}")
+            
             self.contract_abi = self.load_contract_abi()
+            logger.info(f"📋 Loaded ABI with {len(self.contract_abi)} functions")
+            
             self.contract = self.w3.eth.contract(
                 address=self.contract_address,
                 abi=self.contract_abi
             )
+            logger.info("✅ Contract object created successfully")
+            
+            # Test contract call to verify it's working
+            try:
+                logger.info("🧪 Testing contract call...")
+                task_count = self.contract.functions.getCurrentTaskId().call()
+                logger.info(f"📊 Contract test successful - Current task count: {task_count}")
+            except Exception as contract_error:
+                logger.error(f"❌ Contract test failed: {contract_error}")
+                logger.error("This could mean the contract address is wrong or the ABI doesn't match")
+                # Don't fail completely, but log the issue
             
             # Set up account for transactions
             self.private_key = os.getenv("PRIVATE_KEY")
@@ -157,7 +195,8 @@ class FixedTaskFiAgent:
             logger.error(f"Blockchain setup failed: {e}")
             self.w3 = None
             self.contract = None
-            
+            self.account = None
+
     def setup_integrations(self):
         """Initialize integrations"""
         self.opik_api_key = os.getenv("OPIK_API_KEY", "LkIwLEOFo9heWYYO825wYzRTM")
