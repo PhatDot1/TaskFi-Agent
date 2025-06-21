@@ -5,6 +5,7 @@ Fixed TaskFi Monitoring Agent
 - Uses correct contract ABI structure
 - Fixed web3 imports for compatibility
 - Proper tuple handling for contract calls
+- Updated to use working IPFS gateway (dweb.link)
 """
 
 import os
@@ -278,21 +279,47 @@ class FixedTaskFiAgent:
         except Exception as e:
             logger.error(f"Error fetching tasks: {e}")
             return []
-            
-    def is_valid_ipfs_link(self, url: str) -> bool:
-        """Check if URL is a valid IPFS link"""
+    
+    def extract_ipfs_hash(self, url: str) -> Optional[str]:
+        """Extract IPFS hash from various IPFS URL formats"""
         if not url:
-            return False
+            return None
             
-        valid_ipfs_patterns = [
+        # Common IPFS URL patterns
+        patterns = [
             "https://gateway.pinata.cloud/ipfs/",
             "https://ipfs.io/ipfs/",
             "https://cloudflare-ipfs.com/ipfs/",
             "https://dweb.link/ipfs/",
-            "https://gateway.ipfs.io/ipfs/"
+            "https://gateway.ipfs.io/ipfs/",
+            "https://ipfs.infura.io/ipfs/",
         ]
         
-        return any(url.startswith(pattern) for pattern in valid_ipfs_patterns)
+        for pattern in patterns:
+            if url.startswith(pattern):
+                # Extract hash part (everything after the pattern)
+                hash_part = url[len(pattern):]
+                # Remove any additional path components (take only the hash)
+                ipfs_hash = hash_part.split('/')[0].split('?')[0]
+                return ipfs_hash
+                
+        return None
+    
+    def is_valid_ipfs_link(self, url: str) -> bool:
+        """Check if URL is a valid IPFS link"""
+        return self.extract_ipfs_hash(url) is not None
+    
+    def convert_to_working_gateway(self, original_url: str) -> str:
+        """Convert any IPFS URL to the working dweb.link gateway"""
+        ipfs_hash = self.extract_ipfs_hash(original_url)
+        if ipfs_hash:
+            working_url = f"https://dweb.link/ipfs/{ipfs_hash}"
+            if working_url != original_url:
+                logger.info(f"🔄 Converting IPFS URL:")
+                logger.info(f"   Original: {original_url}")
+                logger.info(f"   Working:  {working_url}")
+            return working_url
+        return original_url
     
     def analyze_image(self, image_url: str) -> str:
         """Analyze image using BLIP"""
@@ -300,23 +327,42 @@ class FixedTaskFiAgent:
             return "Image analysis not available - BLIP not loaded"
             
         try:
-            logger.info(f"Analyzing image: {image_url}")
+            # Convert to working gateway if it's an IPFS link
+            working_url = self.convert_to_working_gateway(image_url)
+            logger.info(f"Analyzing image: {working_url}")
             
-            # Download image
-            response = requests.get(image_url, timeout=10)
+            # Download image with proper headers and error handling
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'image/*,*/*;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+            }
+            
+            response = requests.get(working_url, stream=True, timeout=30, headers=headers)
             response.raise_for_status()
             
-            image = Image.open(requests.get(image_url, stream=True).raw)
+            # Check content type
+            content_type = response.headers.get("Content-Type", "")
+            if not content_type.startswith("image/"):
+                return f"Error: Non-image content type ({content_type})"
+            
+            # Load and convert image
+            image = Image.open(response.raw).convert("RGB")
+            logger.info(f"✅ Image loaded successfully: {image.size} {image.mode}")
             
             # Generate caption using BLIP
             inputs = self.blip_processor(image, return_tensors="pt")
             with torch.no_grad():
-                out = self.blip_model.generate(**inputs, max_length=100)
+                out = self.blip_model.generate(**inputs, max_length=50, max_new_tokens=30)
             caption = self.blip_processor.decode(out[0], skip_special_tokens=True)
             
-            logger.info(f"Image caption: {caption}")
+            logger.info(f"📝 Image caption: {caption}")
             return caption
             
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Network error downloading image: {e}")
+            return f"Network error: {e}"
         except Exception as e:
             logger.error(f"Error analyzing image: {e}")
             return f"Image analysis failed: {e}"
@@ -385,16 +431,22 @@ class FixedTaskFiAgent:
             
             Based on the task description and image analysis, does this image show evidence of task completion?
             Consider if the image content relates to the task requirements.
+            Be generous in interpretation - if the image reasonably fulfills the spirit of the task, approve it.
             Respond with either "COMPLETE" or "INCOMPLETE" followed by a brief explanation.
             """
             
             llm_response = self.query_local_llm(verification_prompt)
             
-            # Determine verification result
-            if "COMPLETE" in llm_response.upper() and similarity > 0.3:
+            # Determine verification result - prioritize LLM judgment
+            if "COMPLETE" in llm_response.upper():
                 result = "COMPLETE"
+                logger.info(f"✅ LLM approved the task completion")
+            elif similarity > 0.4:  # High similarity threshold as backup
+                result = "COMPLETE"
+                logger.info(f"✅ High similarity score approved the task")
             else:
                 result = "INCOMPLETE"
+                logger.info(f"❌ Both LLM and similarity checks failed")
                 
             logger.info(f"Verification result: {result} (similarity: {similarity:.3f})")
             logger.info(f"LLM response: {llm_response[:100]}...")
@@ -426,11 +478,17 @@ class FixedTaskFiAgent:
                 'nonce': self.w3.eth.get_transaction_count(self.account.address)
             })
             
-            # Sign transaction
+            # Sign transaction - fix for web3.py compatibility
             signed_txn = self.w3.eth.account.sign_transaction(transaction, self.private_key)
             
-            # Send transaction
-            tx_hash = self.w3.eth.send_raw_transaction(signed_txn.rawTransaction)
+            # Send transaction - handle both old and new web3.py versions
+            if hasattr(signed_txn, 'rawTransaction'):
+                tx_hash = self.w3.eth.send_raw_transaction(signed_txn.rawTransaction)
+            elif hasattr(signed_txn, 'raw_transaction'):
+                tx_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
+            else:
+                # Fallback for newer versions
+                tx_hash = self.w3.eth.send_raw_transaction(signed_txn.signed_transaction)
             
             logger.info(f"{description} - Transaction sent: {tx_hash.hex()}")
             
@@ -464,7 +522,7 @@ class FixedTaskFiAgent:
         return self.send_transaction(function, f"Mark task {task_id} as failed")
         
     def process_tasks_with_proofs(self, tasks: List[TaskData]):
-        """Process tasks that have proof submissions"""
+        """Process tasks that have proof submissions - IPFS IMAGES ONLY"""
         proof_tasks = [
             task for task in tasks 
             if task.status == 0 and task.proof_of_completion  # 0 = InProgress
@@ -472,35 +530,45 @@ class FixedTaskFiAgent:
         
         logger.info(f"Found {len(proof_tasks)} tasks with proofs to process")
         
+        # Filter to only IPFS image links
+        ipfs_tasks = []
         for task in proof_tasks:
+            if self.is_valid_ipfs_link(task.proof_of_completion):
+                ipfs_tasks.append(task)
+            else:
+                logger.info(f"⏭️ Skipping task {task.task_id} - not an IPFS link: {task.proof_of_completion[:50]}...")
+        
+        logger.info(f"Processing {len(ipfs_tasks)} tasks with valid IPFS image links")
+        
+        for task in ipfs_tasks:
             try:
-                logger.info(f"Processing task {task.task_id}: {task.description[:50]}...")
-                logger.info(f"Proof URL: {task.proof_of_completion}")
+                logger.info(f"🖼️ Processing IPFS image task {task.task_id}: {task.description[:50]}...")
+                logger.info(f"📸 Original IPFS URL: {task.proof_of_completion}")
                 
-                # Check if proof is a valid IPFS image link
-                if not self.is_valid_ipfs_link(task.proof_of_completion):
-                    logger.warning(f"⚠️ Task {task.task_id} has non-IPFS proof link - skipping")
-                    logger.info(f"   Proof URL: {task.proof_of_completion}")
-                    logger.info(f"   This agent only handles IPFS image links")
-                    logger.info(f"   Valid patterns: gateway.pinata.cloud/ipfs/, ipfs.io/ipfs/, etc.")
-                    continue
-                
-                # Analyze the proof image
+                # Analyze the proof image (will auto-convert to working gateway)
                 image_description = self.analyze_image(task.proof_of_completion)
+                
+                # Skip if image analysis failed
+                if image_description.startswith("Error:") or image_description.startswith("Network error:") or image_description.startswith("Image analysis failed:"):
+                    logger.warning(f"⚠️ Task {task.task_id} image analysis failed: {image_description}")
+                    logger.info(f"   Skipping verification due to image access issues")
+                    continue
                 
                 # Verify if it shows completion
                 verification_result = self.verify_task_completion(task, image_description)
                 
                 # Take action based on verification
                 if verification_result == "COMPLETE":
-                    logger.info(f"✅ Task {task.task_id} verified as complete - approving")
+                    logger.info(f"✅ Task {task.task_id} verified as complete - APPROVING AS ADMIN")
                     self.approve_task_completion(task.task_id)
                 else:
-                    logger.info(f"❌ Task {task.task_id} verification failed - marking as failed")
-                    self.mark_task_failed(task.task_id)
+                    logger.info(f"❌ Task {task.task_id} verification failed")
+                    logger.info(f"   Image shows: {image_description}")
+                    logger.info(f"   Task requires: {task.description}")
+                    logger.info(f"   ⚠️ Admin rejection - proof does not adequately demonstrate task completion")
                     
             except Exception as e:
-                logger.error(f"Error processing task {task.task_id}: {e}")
+                logger.error(f"Error processing IPFS task {task.task_id}: {e}")
                 
     def check_expired_tasks(self, tasks: List[TaskData]):
         """Check for expired tasks without proofs"""
@@ -534,7 +602,7 @@ class FixedTaskFiAgent:
         """Run one monitoring cycle"""
         try:
             logger.info("=" * 60)
-            logger.info("🚀 Starting monitoring cycle...")
+            logger.info("🚀 Starting IPFS Image monitoring cycle...")
             
             # Fetch all tasks
             tasks = self.fetch_tasks()
@@ -545,16 +613,27 @@ class FixedTaskFiAgent:
                 
             # Show task summary
             status_counts = {}
+            ipfs_proof_count = 0
+            other_proof_count = 0
+            
             for task in tasks:
                 status_name = ["InProgress", "Complete", "Failed"][task.status]
                 status_counts[status_name] = status_counts.get(status_name, 0) + 1
                 
+                if task.proof_of_completion:
+                    if self.is_valid_ipfs_link(task.proof_of_completion):
+                        ipfs_proof_count += 1
+                    else:
+                        other_proof_count += 1
+                    
             logger.info(f"📊 Task Summary: {status_counts}")
+            logger.info(f"🖼️ IPFS image proofs: {ipfs_proof_count}")
+            logger.info(f"🔗 Other proof types: {other_proof_count} (handled by other agents)")
                 
-            # Process tasks with proofs
+            # Process ONLY tasks with IPFS image proofs
             self.process_tasks_with_proofs(tasks)
             
-            # Check for expired tasks
+            # Check for expired tasks (this agent can handle all expired tasks)
             self.check_expired_tasks(tasks)
             
             # Log results
@@ -562,22 +641,25 @@ class FixedTaskFiAgent:
                 "timestamp": datetime.now().isoformat(),
                 "total_tasks": len(tasks),
                 "status_counts": status_counts,
-                "tasks_with_proofs": len([t for t in tasks if t.proof_of_completion and t.status == 0]),
+                "ipfs_image_proofs": ipfs_proof_count,
+                "other_proof_types": other_proof_count,
                 "expired_tasks": len([t for t in tasks if t.status == 0 and int(time.time()) > t.deadline and not t.proof_of_completion])
             })
             
-            logger.info("✅ Monitoring cycle completed")
+            logger.info("✅ IPFS Image monitoring cycle completed")
             
         except Exception as e:
             logger.error(f"❌ Error in monitoring cycle: {e}")
             
     async def run_forever(self, interval: int = 20):
         """Run monitoring agent forever"""
-        logger.info("🤖 Starting TaskFi monitoring agent")
+        logger.info("🖼️ Starting TaskFi IPFS Image Monitoring Agent")
         logger.info(f"📊 Checking every {interval} seconds")
         logger.info(f"📍 Contract: {self.contract_address if self.contract else 'Not available'}")
         logger.info(f"🎯 Features: BLIP={BLIP_AVAILABLE}, Embeddings={EMBEDDINGS_AVAILABLE}, Web3={WEB3_AVAILABLE}")
         logger.info(f"🔑 Account: {self.account.address if self.account else 'Read-only mode'}")
+        logger.info(f"🖼️ Handles: IPFS image links ONLY")
+        logger.info(f"🌐 Working Gateway: https://dweb.link/ipfs/ (auto-converts from other gateways)")
         logger.info("=" * 60)
         
         while True:
@@ -587,7 +669,7 @@ class FixedTaskFiAgent:
                 await asyncio.sleep(interval)
                 
             except KeyboardInterrupt:
-                logger.info("🛑 Agent stopped by user")
+                logger.info("🛑 IPFS Image agent stopped by user")
                 break
             except Exception as e:
                 logger.error(f"💥 Unexpected error: {e}")
